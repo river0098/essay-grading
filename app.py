@@ -3,12 +3,19 @@ import re
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 import PyPDF2
+import pdfplumber
+import pypdfium2 as pdfium
 from docx import Document
 from docx.shared import RGBColor, Pt
 from docx.enum.text import WD_COLOR_INDEX
 from openai import OpenAI
 from dotenv import load_dotenv
 import json
+import logging
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # 加载环境变量
 load_dotenv()
@@ -37,16 +44,83 @@ if DEEPSEEK_API_KEY:
 
 
 def extract_text_from_pdf(pdf_path):
-    """从PDF中提取文本"""
+    """
+    从PDF中提取文本，使用多种方法尝试
+    优先级：pdfplumber > pypdfium2 > PyPDF2
+    """
+    text = ""
+
+    # 方法1: 使用pdfplumber（推荐，最准确）
     try:
+        logger.info(f"尝试使用pdfplumber提取: {pdf_path}")
+        with pdfplumber.open(pdf_path) as pdf:
+            for i, page in enumerate(pdf.pages):
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+                    logger.info(f"pdfplumber - 第{i+1}页提取了 {len(page_text)} 个字符")
+
+        if text.strip():
+            logger.info(f"pdfplumber成功提取，总共 {len(text)} 个字符")
+            return text
+        else:
+            logger.warning("pdfplumber提取的文本为空，尝试其他方法")
+    except Exception as e:
+        logger.warning(f"pdfplumber提取失败: {str(e)}，尝试其他方法")
+
+    # 方法2: 使用pypdfium2
+    try:
+        logger.info(f"尝试使用pypdfium2提取: {pdf_path}")
+        pdf = pdfium.PdfDocument(pdf_path)
+        text = ""
+        for i, page in enumerate(pdf):
+            textpage = page.get_textpage()
+            page_text = textpage.get_text_range()
+            if page_text:
+                text += page_text + "\n"
+                logger.info(f"pypdfium2 - 第{i+1}页提取了 {len(page_text)} 个字符")
+        pdf.close()
+
+        if text.strip():
+            logger.info(f"pypdfium2成功提取，总共 {len(text)} 个字符")
+            return text
+        else:
+            logger.warning("pypdfium2提取的文本为空，尝试最后一种方法")
+    except Exception as e:
+        logger.warning(f"pypdfium2提取失败: {str(e)}，尝试最后一种方法")
+
+    # 方法3: 使用PyPDF2（fallback）
+    try:
+        logger.info(f"尝试使用PyPDF2提取: {pdf_path}")
         with open(pdf_path, 'rb') as file:
             pdf_reader = PyPDF2.PdfReader(file)
             text = ""
-            for page in pdf_reader.pages:
-                text += page.extract_text()
-            return text
+            for i, page in enumerate(pdf_reader.pages):
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+                    logger.info(f"PyPDF2 - 第{i+1}页提取了 {len(page_text)} 个字符")
+
+            if text.strip():
+                logger.info(f"PyPDF2成功提取，总共 {len(text)} 个字符")
+                return text
+            else:
+                logger.error("PyPDF2提取的文本为空")
     except Exception as e:
-        raise Exception(f"PDF文本提取失败: {str(e)}")
+        logger.error(f"PyPDF2提取失败: {str(e)}")
+        raise Exception(f"所有PDF文本提取方法都失败了: {str(e)}")
+
+    # 如果所有方法都没有提取到文本
+    if not text.strip():
+        raise Exception(
+            "无法从PDF中提取文本。可能的原因：\n"
+            "1. PDF是扫描件（图片），需要OCR识别\n"
+            "2. PDF使用了特殊编码或加密\n"
+            "3. PDF文件损坏\n"
+            "建议：使用包含可选择文本的PDF文件，或者先进行OCR处理"
+        )
+
+    return text
 
 
 def identify_essays(text):
@@ -321,24 +395,45 @@ def upload_file():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
 
+        logger.info(f"文件已保存: {filepath}, 大小: {os.path.getsize(filepath)} bytes")
+
         # 提取文本
         text = extract_text_from_pdf(filepath)
 
         if not text.strip():
-            return jsonify({'error': 'PDF文件为空或无法提取文本（可能是扫描件）'}), 400
+            logger.error(f"PDF文件 {filename} 提取的文本为空")
+            return jsonify({
+                'error': 'PDF文件为空或无法提取文本（可能是扫描件）',
+                'details': '请确保PDF包含可选择的文本，而不是扫描图片'
+            }), 400
+
+        logger.info(f"成功提取 {len(text)} 个字符")
 
         # 识别作文
         essays = identify_essays(text)
+        logger.info(f"识别到 {len(essays)} 篇作文")
+
+        # 保存提取的文本到临时文件（便于调试）
+        debug_file = os.path.join(app.config['UPLOAD_FOLDER'], f"{filename}.txt")
+        with open(debug_file, 'w', encoding='utf-8') as f:
+            f.write(text)
+        logger.info(f"调试文本已保存到: {debug_file}")
 
         return jsonify({
             'success': True,
             'filename': filename,
             'essay_count': len(essays),
-            'message': f'成功识别 {len(essays)} 篇作文'
+            'text_length': len(text),
+            'message': f'成功识别 {len(essays)} 篇作文（共{len(text)}字符）',
+            'preview': text[:200] + '...' if len(text) > 200 else text  # 返回预览
         })
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"上传处理失败: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': str(e),
+            'details': '详细错误信息请查看服务器日志'
+        }), 500
 
 
 @app.route('/grade', methods=['POST'])
@@ -406,6 +501,22 @@ def download_file(filename):
         return send_file(filepath, as_attachment=True)
     except Exception as e:
         return jsonify({'error': str(e)}), 404
+
+
+@app.route('/debug/<filename>')
+def debug_text(filename):
+    """查看提取的文本（调试用）"""
+    try:
+        # 查看原始提取的文本
+        text_file = os.path.join(app.config['UPLOAD_FOLDER'], f"{filename}.txt")
+        if os.path.exists(text_file):
+            with open(text_file, 'r', encoding='utf-8') as f:
+                text = f.read()
+            return f"<pre>{text}</pre>"
+        else:
+            return jsonify({'error': '调试文本文件不存在'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/health')

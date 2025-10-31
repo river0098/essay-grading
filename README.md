@@ -5,11 +5,14 @@
 ## 功能特点
 
 - ✅ PDF文档上传（支持拖拽）
+- ✅ **多重PDF文本提取**（pdfplumber + pypdfium2 + PyPDF2）
+- ✅ **详细的调试和日志功能**
 - ✅ 自动识别多篇作文
 - ✅ 根据评分标准进行批改
 - ✅ 逐句错误检测和纠正
 - ✅ 生成详细的Word批改文档
 - ✅ 提供改善建议
+- ✅ PDF文本提取测试工具
 
 ## 安装步骤
 
@@ -63,27 +66,53 @@ python app.py
 
 ## 使用方法
 
+### 快速测试PDF提取（推荐第一步）
+
+在上传PDF之前，建议先测试PDF文本提取是否正常：
+
+```bash
+python test_pdf_extraction.py your_file.pdf
+```
+
+这会帮助你：
+- 确认PDF可以正常提取文本
+- 查看提取的文本内容
+- 诊断可能的问题
+
+### Web界面使用
+
 1. 在浏览器中打开 `http://localhost:5000`
 2. 点击上传区域或拖拽PDF文件
-3. 系统会自动识别作文数量
+3. 系统会自动识别作文数量并显示文本预览
 4. 点击"开始批改"按钮
 5. 等待处理完成（根据作文数量和长度，可能需要几分钟）
 6. 下载生成的Word批改文档
+
+### 调试提取的文本
+
+如果作文识别有问题，可以访问：
+```
+http://localhost:5000/debug/your_filename.pdf
+```
+
+查看系统实际提取的文本内容。
 
 ## 项目结构
 
 ```
 essay-grading/
-├── app.py                    # Flask后端主程序
+├── app.py                      # Flask后端主程序
+├── test_pdf_extraction.py      # PDF文本提取测试工具
+├── create_criteria.py          # 评分标准文档生成脚本
 ├── templates/
-│   └── index.html           # 前端页面
-├── requirements.txt         # Python依赖
-├── .env.example             # 环境变量模板
-├── .gitignore              # Git忽略文件
-├── 应用文评分标准.docx      # 评分标准文档（可选）
-├── uploads/                 # 临时上传文件夹
+│   └── index.html             # 前端页面
+├── requirements.txt           # Python依赖
+├── .env.example               # 环境变量模板
+├── .gitignore                # Git忽略文件
+├── 应用文评分标准.docx        # 评分标准文档（可选）
+├── uploads/                   # 临时上传文件夹
 │   └── .gitkeep
-└── outputs/                 # 生成的Word文档
+└── outputs/                   # 生成的Word文档
     └── .gitkeep
 ```
 
@@ -140,6 +169,7 @@ essay-grading/
 - `POST /upload` - 上传PDF文件
 - `POST /grade` - 批改作文
 - `GET /download/<filename>` - 下载批改报告
+- `GET /debug/<filename>` - 查看提取的文本（调试用）
 - `GET /health` - 健康检查
 
 ## 故障排除
@@ -147,16 +177,81 @@ essay-grading/
 ### 问题：系统提示"未配置DeepSeek API密钥"
 **解决方案**：确保已正确配置 `.env` 文件或设置环境变量 `DEEPSEEK_API_KEY`
 
-### 问题：PDF无法提取文本
-**解决方案**：检查PDF是否为扫描件，如是，需要先进行OCR处理
+### 问题：PDF无法提取文本（最常见问题）
+
+系统使用多种方法提取PDF文本：
+1. **pdfplumber**（推荐，最准确）
+2. **pypdfium2**（备选方案）
+3. **PyPDF2**（最后的fallback）
+
+**如何诊断问题**：
+
+使用测试脚本诊断：
+```bash
+python test_pdf_extraction.py your_file.pdf
+```
+
+该脚本会：
+- 测试三种提取方法
+- 显示每页提取的字符数
+- 显示文本预览
+- 保存提取的文本到 `.extracted.txt` 文件
+- 给出具体建议
+
+**常见原因和解决方案**：
+
+1. **PDF是扫描件（图片）**
+   - 症状：所有方法都提取不到文本
+   - 检查：在PDF阅读器中尝试选择文字，如果不能选择，就是扫描件
+   - 解决：
+     - 使用在线OCR工具（如 https://www.onlineocr.net/）
+     - 使用Adobe Acrobat的OCR功能
+     - 使用Tesseract OCR本地处理
+
+2. **PDF使用特殊编码**
+   - 症状：提取的文字是乱码或不完整
+   - 解决：尝试用PDF编辑器（如Adobe Acrobat）重新保存PDF
+
+3. **PDF被加密或有保护**
+   - 症状：提示权限错误
+   - 解决：用PDF编辑器移除保护后再上传
+
+4. **PDF文件损坏**
+   - 症状：提示无法打开文件
+   - 解决：尝试用PDF阅读器修复文件
+
+**调试功能**：
+
+系统会自动保存提取的文本，上传后可以访问：
+```
+http://localhost:5000/debug/your_filename.pdf
+```
+
+查看实际提取的文本内容。
+
+**查看服务器日志**：
+
+运行应用时会显示详细日志：
+```bash
+python app.py
+```
+
+日志会显示：
+- 使用哪种方法提取
+- 每页提取了多少字符
+- 是否有错误发生
 
 ### 问题：作文识别数量不正确
-**解决方案**：调整 `app.py` 中 `identify_essays()` 函数的识别逻辑
+**解决方案**：
+- 查看调试页面 `/debug/filename.pdf` 确认提取的文本内容
+- 调整 `app.py` 中 `identify_essays()` 函数的识别逻辑
+- 确保作文之间有明显的分隔（多个空行、学号、姓名等）
 
 ### 问题：批改时间过长
 **解决方案**：
 - DeepSeek API调用需要时间，请耐心等待
 - 可以在 `check_essay_with_ai()` 中调整 `max_tokens` 参数
+- 每篇作文大约需要30-60秒
 
 ## 开发计划
 
