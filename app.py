@@ -29,18 +29,46 @@ app.config['OUTPUT_FOLDER'] = 'outputs'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 
-# DeepSeek API配置
+# AI API配置 - 支持多个提供商
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
-if not DEEPSEEK_API_KEY:
-    print("警告: 未配置DEEPSEEK_API_KEY，系统无法正常工作")
+DOUBAO_API_KEY = os.getenv('DOUBAO_API_KEY')
+DOUBAO_BASE_URL = os.getenv('DOUBAO_BASE_URL', 'https://ark.cn-beijing.volces.com/api/v3')
+DOUBAO_MODEL = os.getenv('DOUBAO_MODEL', 'doubao-seed-1-6-251015')
 
-# 初始化DeepSeek客户端（使用OpenAI SDK，但指向DeepSeek API）
+# 初始化AI客户端（支持DeepSeek和豆包）
 client = None
-if DEEPSEEK_API_KEY:
+AI_MODEL = None
+API_PROVIDER = None
+
+if DOUBAO_API_KEY:
+    # 优先使用豆包API
+    logger.info("使用豆包(Doubao) API")
+    client = OpenAI(
+        api_key=DOUBAO_API_KEY,
+        base_url=DOUBAO_BASE_URL
+    )
+    AI_MODEL = DOUBAO_MODEL
+    API_PROVIDER = "Doubao"
+elif DEEPSEEK_API_KEY:
+    # 使用DeepSeek API
+    logger.info("使用DeepSeek API")
     client = OpenAI(
         api_key=DEEPSEEK_API_KEY,
         base_url="https://api.deepseek.com"
     )
+    AI_MODEL = "deepseek-chat"
+    API_PROVIDER = "DeepSeek"
+else:
+    logger.warning("警告: 未配置API密钥，系统无法正常工作")
+    logger.warning("请配置 DEEPSEEK_API_KEY 或 DOUBAO_API_KEY")
+    print("\n" + "="*60)
+    print("⚠️  未配置AI API密钥")
+    print("="*60)
+    print("请配置以下任一API密钥：")
+    print("1. DeepSeek API: 在.env文件中添加 DEEPSEEK_API_KEY")
+    print("2. 豆包 API: 在.env文件中添加 DOUBAO_API_KEY")
+    print("\n详细配置说明请查看: API_SETUP.md")
+    print("="*60 + "\n")
 
 
 def extract_text_from_pdf(pdf_path):
@@ -192,12 +220,14 @@ def load_grading_criteria():
 
 
 def check_essay_with_ai(essay_content, criteria):
-    """使用DeepSeek API批改作文"""
-    if not client:
+    """使用AI API批改作文（支持DeepSeek和豆包）"""
+    if not client or not AI_MODEL:
         return {
             'success': False,
-            'error': '未配置DeepSeek API密钥'
+            'error': f'未配置AI API密钥。请配置 DEEPSEEK_API_KEY 或 DOUBAO_API_KEY'
         }
+
+    logger.info(f"使用 {API_PROVIDER} API 批改作文...")
 
     prompt = f"""你是一位专业的英语作文批改老师。请根据以下评分标准，对学生的英语作文进行详细批改。
 
@@ -237,7 +267,7 @@ JSON格式示例：
 
     try:
         response = client.chat.completions.create(
-            model="deepseek-chat",
+            model=AI_MODEL,  # 使用配置的模型
             messages=[
                 {"role": "system", "content": "你是一位专业的英语作文批改老师，擅长发现语法错误、提供建设性意见。"},
                 {"role": "user", "content": prompt}
@@ -245,6 +275,8 @@ JSON格式示例：
             temperature=0.3,
             max_tokens=4000
         )
+
+        logger.info(f"{API_PROVIDER} API 调用成功")
 
         result_text = response.choices[0].message.content
 
@@ -524,7 +556,9 @@ def health_check():
     """健康检查"""
     return jsonify({
         'status': 'ok',
-        'deepseek_configured': client is not None
+        'api_configured': client is not None,
+        'api_provider': API_PROVIDER if client else None,
+        'api_model': AI_MODEL if client else None
     })
 
 
